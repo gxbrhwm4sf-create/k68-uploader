@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>K68 Face Uploader</title>
+<style>
+/* Layout: one narrow column of numbered stages, log at the bottom. */
+:root{
+  --bg:#f3f5f4; --panel:#ffffff; --ink:#18201d; --muted:#5b6762; --line:#d6ddd9;
+  --accent:#0f7a5c; --accent-ink:#ffffff; --warn:#a15c00; --bad:#b3261e; --good:#0f7a5c;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#101513; --panel:#18201d; --ink:#e6ece9; --muted:#9aa8a2; --line:#2c3833;
+  --accent:#3ccf9f; --accent-ink:#06261b; --warn:#f0b35a; --bad:#ff8a80; --good:#3ccf9f; color-scheme:dark}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 var(--sans);
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));
+  padding-top:max(16px,env(safe-area-inset-top,0px));padding-bottom:max(24px,env(safe-area-inset-bottom,0px))}
+main{max-width:560px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
+h1{font-size:22px;margin:4px 0 0;letter-spacing:-.01em}
+.sub{color:var(--muted);margin:0}
+section{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:10px}
+h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:0}
+button{font:600 16px var(--sans);border-radius:10px;border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:12px 14px;min-height:46px}
+button.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+button:disabled{opacity:.45}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.row>button{flex:1 1 160px}
+input[type=file]{font:inherit;max-width:100%}
+select{font:inherit;padding:8px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--ink)}
+.facts{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:14px}
+.facts dt{color:var(--muted)} .facts dd{margin:0;font-family:var(--mono);overflow-wrap:anywhere}
+.preview{display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+canvas{width:120px;height:120px;border-radius:50%;background:#000;flex:none}
+.status{font-weight:600}
+.ok{color:var(--good)} .warn{color:var(--warn)} .bad{color:var(--bad)}
+progress{width:100%;height:14px;accent-color:var(--accent)}
+.num{font-variant-numeric:tabular-nums}
+#log{font:12px/1.45 var(--mono);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px;height:220px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;margin:0}
+.note{font-size:13px;color:var(--muted);margin:0}
+</style>
+</head>
+<body>
+<main>
+  <div>
+    <h1>K68 Face Uploader</h1>
+    <p class="sub">Sends a watch-face file straight to your K68 over Bluetooth. Close FitCloudPro first (swipe it away).</p>
+  </div>
+
+  <section aria-labelledby="s1">
+    <h2 id="s1">1 · Face file</h2>
+    <input type="file" id="file" accept=".bin,application/octet-stream">
+    <div id="fileinfo" hidden>
+      <div class="preview">
+        <canvas id="pv" width="240" height="240" aria-label="Face preview"></canvas>
+        <dl class="facts">
+          <dt>Face ID</dt><dd id="fid"></dd>
+          <dt>Size</dt><dd id="fsize"></dd>
+          <dt>Checksum</dt><dd id="fcrc"></dd>
+        </dl>
+      </div>
+    </div>
+    <p class="status" id="filestatus">No file chosen.</p>
+  </section>
+
+  <section aria-labelledby="s2">
+    <h2 id="s2">2 · Watch</h2>
+    <div class="row">
+      <button id="connect" class="primary">Connect to K68</button>
+      <button id="connectAny">Show all devices</button>
+    </div>
+    <p class="status" id="connstatus">Not connected.</p>
+  </section>
+
+  <section aria-labelledby="s3">
+    <h2 id="s3">3 · Send</h2>
+    <div class="row">
+      <label for="chunk">Packet size</label>
+      <select id="chunk">
+        <option value="180" selected>180 bytes (safe)</option>
+        <option value="240">240 bytes (faster, same as the app)</option>
+        <option value="100">100 bytes (if 180 fails)</option>
+      </select>
+    </div>
+    <div class="row">
+      <button id="send" class="primary" disabled>Send face</button>
+      <button id="cancel" disabled>Cancel</button>
+    </div>
+    <progress id="prog" max="1" value="0"></progress>
+    <p class="status num" id="sendstatus">Choose a file and connect first.</p>
+    <p class="note">Keep the screen on and the watch close. If anything fails before the end, the watch keeps its current face. The watch restarts by itself when the new face is installed.</p>
+  </section>
+
+  <section aria-labelledby="s4">
+    <h2 id="s4">Log</h2>
+    <pre id="log" aria-live="polite"></pre>
+    <div class="row"><button id="copylog">Copy log</button></div>
+  </section>
+</main>
+
+<script>
+/*CORE-START*/
+const K68 = (() => {
+  const SVC_CMD  = '000001ff-3c17-d293-8e48-14fe2e4da212';
+  const CH_CMD_W = '0000ff02-0000-1000-8000-00805f9b34fb';
+  const CH_CMD_N = '0000ff03-0000-1000-8000-00805f9b34fb';
+  const SVC_DFU  = '00006287-3c17-d293-8e48-14fe2e4da212';
+  const CH_DATA  = '00006387-3c17-d293-8e48-14fe2e4da212';
+  const CH_CTRL  = '00006487-3c17-d293-8e48-14fe2e4da212';
+  // App user id the FitCloudPro app sends when it (re)connects; captured from your logs.
+  const BIND_ID = '9223372036854775807';
+
+  const ARC = new Uint16Array(256);
+  for (let i = 0; i < 256; i++) { let c = i; for (let k = 0; k < 8; k++) c = (c & 1) ? (c >>> 1) ^ 0xA001 : c >>> 1; ARC[i] = c; }
+  const arc = (c, d, s = 0, e = d.length) => { for (let i = s; i < e; i++) c = ARC[(c ^ d[i]) & 255] ^ (c >>> 8); return c; };
+
+  function headerCrc(f) {
+    const d = f.slice(); for (let i = 372; i < 404; i++) d[i] = 0xff;
+    let c = arc(arc(0, d, 12, 752), d, 1008, d.length);
+    if (c === 0) { d[372] = 0; c = arc(arc(0, d, 12, 752), d, 1008, d.length); }
+    return c;
+  }
+  const u16 = (b, o) => b[o] | (b[o + 1] << 8);
+  const u32 = (b, o) => (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0;
+
+  function inspect(f) {
+    const problems = [];
+    if (f.length < 0x400 + 0x4920) problems.push('File is too small to be a watch face.');
+    else {
+      if (!(f[0] === 5 && f[1] === 0 && f[2] === 0x70 && f[3] === 0x19 && f[4] === 0xa1 && f[5] === 0x27)) problems.push('Header is not a K68 face header.');
+      if (u32(f, 8) !== f.length - 0x400) problems.push('Length in header does not match the file.');
+      const t = String.fromCharCode(f[0x400], f[0x401], f[0x402], f[0x403]);
+      const tail = String.fromCharCode(...f.slice(f.length - 4));
+      if (t !== 'TBUI' || tail !== 'TBUI') problems.push('Face data (TBUI) is missing or truncated.');
+    }
+    const crcOk = problems.length === 0 && headerCrc(f) === u16(f, 6);
+    if (problems.length === 0 && !crcOk) problems.push('Header checksum does not match. The watch would reject it.');
+    const faceId = f.length >= 0x40c ? u32(f, 0x408) : 0;
+    return { ok: problems.length === 0, problems, faceId, size: f.length, crcOk };
+  }
+
+  function frame(cat, key, value, seq) {
+    const p = new Uint8Array(5 + value.length);
+    p[0] = cat; p[1] = key >> 8; p[2] = key & 255; p[3] = value.length >> 8; p[4] = value.length & 255; p.set(value, 5);
+    const c = arc(0, p);
+    const f = new Uint8Array(8 + p.length);
+    f.set([0xab, 0x00, p.length >> 8, p.length & 255, c >> 8, c & 255, (seq >> 8) & 255, seq & 255]); f.set(p, 8);
+    return f;
+  }
+  const ackFrame = seq => new Uint8Array([0xab, 0x10, 0, 0, 0, 0, (seq >> 8) & 255, seq & 255]);
+
+  function xorCheck(block) {   // XOR of the block as 16-bit little-endian words, sent high byte first
+    let lo = 0, hi = 0;
+    for (let i = 0; i + 1 < block.length; i += 2) { lo ^= block[i]; hi ^= block[i + 1]; }
+    if (block.length & 1) lo ^= block[block.length - 1];
+    return [hi, lo];
+  }
+
+  // io: { writeCmd(bytes), writeCtrl(bytes), writeData(bytes), cmdEvents, ctrlEvents (each {wait(pred,ms)}) , sleep(ms) }
+  async function upload(io, file, opts) {
+    const log = opts.log || (() => {}), progress = opts.progress || (() => {});
+    const chunk = opts.chunk || 180, cancelled = opts.cancelled || (() => false);
+    const hex = b => Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
+    let seq = 1;
+    const check = () => { if (cancelled()) throw new Error('Cancelled before the watch installed anything.'); };
+
+    // 1. Bind (same as the app does on every connect)
+    const id = new Uint8Array(32); for (let i = 0; i < BIND_ID.length; i++) id[i] = BIND_ID.charCodeAt(i);
+    await io.writeCmd(frame(3, 0x0013, id, seq++));
+    const bind = await io.cmdEvents.wait(m => m.cat === 3 && m.key === 0x0014, 6000);
+    log('bind reply ' + hex(bind.value));
+    if (bind.value[0] !== 0) throw new Error('Watch refused the connection (bind reply ' + hex(bind.value) + ').');
+    check();
+    // 2. Prepare for face transfer
+    await io.writeCmd(frame(1, 0x0001, new Uint8Array(0), seq++));
+    const prep = await io.cmdEvents.wait(m => m.cat === 1 && m.key === 0x0002, 6000);
+    log('prepare reply ' + hex(prep.value));
+    if (prep.value.some(x => x !== 0)) throw new Error('Watch is not ready for a face transfer (reply ' + hex(prep.value) + ').');
+    check();
+    // 3. Transfer handshake
+    await io.writeCtrl(new Uint8Array([0x09]));
+    const r9 = await io.ctrlEvents.wait(v => v[0] === 0x10 && v[1] === 0x09, 6000);
+    log('buffer check reply ' + hex(r9));
+    await io.writeCtrl(new Uint8Array([0x06, 0xa1, 0x27]));
+    const r6 = await io.ctrlEvents.wait(v => v[0] === 0x10 && v[1] === 0x06, 6000);
+    log('image info reply ' + hex(r6));
+    await io.writeCtrl(new Uint8Array([0x12, 0xa1, 0x27, 0x01, 0x01]));
+    await io.sleep(60);
+    const start = new Uint8Array(17); start[0] = 0x01; start.fill(0xff, 1, 13);
+    await io.writeCtrl(start);
+    const r1 = await io.ctrlEvents.wait(v => v[0] === 0x10 && v[1] === 0x01, 6000);
+    log('start reply ' + hex(r1));
+    if (r1[2] !== 0x01) throw new Error('Watch refused to start the transfer (status ' + r1[2] + ').');
+    await io.writeCtrl(new Uint8Array([0x02, 0xa1, 0x27, 0, 0, 0, 0]));
+    check();
+    // 4. Data in 2048-byte blocks, each followed by a check
+    let off = 0, retries = 0; const total = file.length; const t0 = Date.now();
+    while (off < total) {
+      check();
+      const block = file.subarray(off, Math.min(off + 2048, total));
+      try {
+        for (let i = 0; i < block.length; i += chunk) await io.writeData(block.subarray(i, Math.min(i + chunk, block.length)));
+      } catch (e) {
+        throw new Error(`Sending data failed at ${off} bytes (${e.message}). Pick a smaller packet size and try again. Nothing was installed.`);
+      }
+      const [h, l] = xorCheck(block);
+      io.ctrlEvents.clear && io.ctrlEvents.clear(v => v[0] === 0x10 && v[1] === 0x0a);
+      await io.writeCtrl(new Uint8Array([0x0a, block.length & 255, block.length >> 8, h, l]));
+      const r = await io.ctrlEvents.wait(v => v[0] === 0x10 && v[1] === 0x0a, 10000);
+      const status = r[2], next = u32(r, 3);
+      if (status === 1 && next === off + block.length) { off = next; retries = 0; }
+      else {
+        retries++; log(`block at ${off} rejected (status ${status}, watch at ${next}), retry ${retries}`);
+        if (retries > 3) throw new Error('Watch kept rejecting data. Nothing was installed.');
+        if (next <= off + block.length && next >= Math.max(0, off - 2048)) off = next;
+      }
+      const secs = (Date.now() - t0) / 1000;
+      progress(off, total, secs);
+    }
+    // 5. Validate, then activate
+    await io.writeCtrl(new Uint8Array([0x03, 0xa1, 0x27, 0x01]));
+    const r3 = await io.ctrlEvents.wait(v => v[0] === 0x10 && v[1] === 0x03, 15000);
+    log('validate reply ' + hex(r3));
+    if (r3[2] !== 0x01) throw new Error('Watch rejected the face after receiving it (status ' + r3[2] + '). Nothing was installed; the old face stays.');
+    try { await io.writeCtrl(new Uint8Array([0x04, 0x00])); } catch (e) { log('activate write ended with: ' + e.message + ' (normal: the watch restarts)'); }
+    return { bytes: total };
+  }
+
+  // Reassembles AB frames from the command notification stream.
+  function makeCmdParser(onMessage, onAckNeeded) {
+    let cur = null;
+    return function feed(b) {
+      if (cur && cur.p.length < cur.len) { const n = new Uint8Array(cur.p.length + b.length); n.set(cur.p); n.set(b, cur.p.length); cur.p = n; }
+      else if (b[0] === 0xab && b.length >= 8) {
+        const flag = b[1], len = (b[2] << 8) | b[3], seq = (b[6] << 8) | b[7];
+        if (flag === 0x10) return;            // ack from the watch
+        cur = { len, seq, p: b.slice(8) };
+      } else return;
+      if (cur.p.length >= cur.len) {
+        const p = cur.p.subarray(0, cur.len); const s = cur.seq; cur = null;
+        onAckNeeded(s);
+        if (p.length >= 5) onMessage({ cat: p[0], key: (p[1] << 8) | p[2], value: p.slice(5, 5 + ((p[3] << 8) | p[4])) });
+      }
+    };
+  }
+
+  // Simple awaitable queue for notifications.
+  function makeQueue() {
+    let items = [], waiters = [];
+    return {
+      push(x) { const w = waiters.findIndex(w => w.pred(x)); if (w >= 0) { const [ww] = waiters.splice(w, 1); clearTimeout(ww.t); ww.res(x); } else items.push(x); },
+      clear(pred) { items = items.filter(x => !pred(x)); },
+      wait(pred, ms) {
+        const i = items.findIndex(pred); if (i >= 0) return Promise.resolve(items.splice(i, 1)[0]);
+        return new Promise((res, rej) => { const w = { pred, res }; w.t = setTimeout(() => { waiters = waiters.filter(x => x !== w); rej(new Error('The watch stopped answering. Nothing was installed; the old face stays.')); }, ms); waiters.push(w); });
+      }
+    };
+  }
+
+  // Preview decoder for the 240x240 picker image (formats 1, 8, 11, 12).
+  function previewRGBA(f) {
+    const t = f.subarray(0x400), u16t = (o) => t[o] | (t[o + 1] << 8), u32t = (o) => u32(t, o);
+    const eo = u32t(0x40), ec = u16t(0x44), ao = u32t(0x48), ac = u16t(0x4c);
+    let asset = -1;
+    for (let i = 0; i < ec; i++) { const e = eo + i * 32; if (t[e + 1] === 6 && t[e + 3] === 1) asset = u32t(e + 12); }
+    if (asset < 0 || asset >= ac) return null;
+    const a = ao + asset * 12, fmt = t[a + 2], fl = t[a + 3], w = u16t(a + 4), h = u16t(a + 6), o = u32t(a + 8);
+    const out = new Uint8ClampedArray(w * h * 4);
+    const put = (i, c, al) => { out[i * 4] = ((c >> 11) & 31) * 255 / 31; out[i * 4 + 1] = ((c >> 5) & 63) * 255 / 63; out[i * 4 + 2] = (c & 31) * 255 / 31; out[i * 4 + 3] = al; };
+    if (fmt === 12) { for (let i = 0; i < w * h; i++) put(i, u16t(o + i * 2), 255); }
+    else if (fmt === 11 || fmt === 1 || (fmt === 8 && fl === 4)) {
+      const rowsAt = fmt === 11 ? o + 12 : o; const rel = fmt === 11 ? o : 0;
+      let pal = null;
+      if (fmt === 8) { const p = o + 4 * (h + 1), n = u32t(p); pal = []; for (let k = 0; k < n; k++) pal.push(u16t(p + 4 + 2 * k)); }
+      for (let y = 0; y < h; y++) {
+        let k = rel + u32t(rowsAt + 4 * y); let x = 0;
+        while (x < w) {
+          if (fmt === 11) { const n = t[k], c = u16t(k + 1), al = t[k + 3]; for (let j = 0; j < n; j++) put(y * w + x + j, c, al); x += n; k += 4; }
+          else if (fmt === 1) { const n = t[k], c = u16t(k + 1); for (let j = 0; j < n; j++) put(y * w + x + j, c, 255); x += n; k += 3; }
+          else { const n = t[k], c = pal[t[k + 1]]; for (let j = 0; j < n; j++) put(y * w + x + j, c, 255); x += n; k += 2; }
+          if (k >= t.length) return null;
+        }
+      }
+    } else return null;
+    return { w, h, data: out };
+  }
+
+  return { SVC_CMD, CH_CMD_W, CH_CMD_N, SVC_DFU, CH_DATA, CH_CTRL, inspect, headerCrc, frame, ackFrame, xorCheck, upload, makeCmdParser, makeQueue, previewRGBA };
+})();
+if (typeof module !== 'undefined') module.exports = K68;
+/*CORE-END*/
+</script>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const logEl = $('log');
+  const log = (msg, cls) => { const t = new Date().toLocaleTimeString(); logEl.textContent += `[${t}] ${msg}\n`; logEl.scrollTop = logEl.scrollHeight; };
+  const setStatus = (el, msg, cls) => { el.textContent = msg; el.className = 'status num ' + (cls || ''); };
+
+  let fileBytes = null, device = null, gatt = null, chars = null, busy = false, cancel = false, wakeLock = null;
+
+  if (!navigator.bluetooth) {
+    setStatus($('connstatus'), 'This browser has no Bluetooth access. On iPhone, open this page in the Bluefy app.', 'bad');
+    $('connect').disabled = $('connectAny').disabled = true;
+  }
+
+  $('file').addEventListener('change', async e => {
+    const f = e.target.files[0]; if (!f) return;
+    fileBytes = new Uint8Array(await f.arrayBuffer());
+    const info = K68.inspect(fileBytes);
+    $('fileinfo').hidden = false;
+    $('fid').textContent = info.faceId ? String(info.faceId & 0xffffff).padStart(6, '0') + '  (0x' + info.faceId.toString(16) + ')' : '—';
+    $('fsize').textContent = (info.size / 1024).toFixed(0) + ' KB';
+    $('fcrc').textContent = info.crcOk ? 'valid' : 'invalid';
+    try {
+      const pv = info.ok ? K68.previewRGBA(fileBytes) : null; const cv = $('pv'), cx = cv.getContext('2d');
+      cx.clearRect(0, 0, cv.width, cv.height);
+      if (pv) { cv.width = pv.w; cv.height = pv.h; cx.putImageData(new ImageData(pv.data, pv.w, pv.h), 0, 0); }
+    } catch (err) { log('preview failed: ' + err.message); }
+    if (info.ok) { setStatus($('filestatus'), `Ready: ${f.name}`, 'ok'); log(`file ${f.name}, ${info.size} bytes, face ${info.faceId}`); }
+    else { setStatus($('filestatus'), info.problems.join(' '), 'bad'); fileBytes = null; }
+    refresh();
+  });
+
+  function refresh() { $('send').disabled = !(fileBytes && chars && !busy); $('cancel').disabled = !busy; }
+
+  async function connect(all) {
+    try {
+      const opts = { optionalServices: [K68.SVC_CMD, K68.SVC_DFU] };
+      if (all) opts.acceptAllDevices = true; else opts.filters = [{ namePrefix: 'K68' }, { namePrefix: 'K6' }];
+      setStatus($('connstatus'), 'Choose your watch in the list…');
+      device = await navigator.bluetooth.requestDevice(opts);
+      device.addEventListener('gattserverdisconnected', () => { log('watch disconnected'); chars = null; setStatus($('connstatus'), 'Disconnected.', busy ? 'bad' : ''); refresh(); });
+      setStatus($('connstatus'), 'Connecting to ' + (device.name || 'watch') + '…');
+      gatt = await device.gatt.connect();
+      const cmd = await gatt.getPrimaryService(K68.SVC_CMD), dfu = await gatt.getPrimaryService(K68.SVC_DFU);
+      chars = {
+        cmdW: await cmd.getCharacteristic(K68.CH_CMD_W), cmdN: await cmd.getCharacteristic(K68.CH_CMD_N),
+        data: await dfu.getCharacteristic(K68.CH_DATA), ctrl: await dfu.getCharacteristic(K68.CH_CTRL)
+      };
+      setStatus($('connstatus'), 'Connected to ' + (device.name || 'watch') + '.', 'ok'); log('connected to ' + (device.name || '?'));
+    } catch (e) {
+      setStatus($('connstatus'), 'Could not connect: ' + e.message, 'bad'); log('connect error: ' + e.message); chars = null;
+    }
+    refresh();
+  }
+  $('connect').addEventListener('click', () => connect(false));
+  $('connectAny').addEventListener('click', () => connect(true));
+  $('cancel').addEventListener('click', () => { cancel = true; log('cancel requested'); });
+  $('copylog').addEventListener('click', async () => { try { await navigator.clipboard.writeText(logEl.textContent); } catch { const r = document.createRange(); r.selectNodeContents(logEl); const s = getSelection(); s.removeAllRanges(); s.addRange(r); } });
+
+  const write = async (ch, bytes, withResponse) => {
+    if (withResponse && ch.writeValueWithResponse) return ch.writeValueWithResponse(bytes);
+    if (!withResponse && ch.writeValueWithoutResponse) return ch.writeValueWithoutResponse(bytes);
+    return ch.writeValue(bytes);
+  };
+
+  $('send').addEventListener('click', async () => {
+    if (!fileBytes || !chars) return;
+    busy = true; cancel = false; refresh();
+    try { wakeLock = await navigator.wakeLock?.request('screen'); } catch {}
+    const cmdQ = K68.makeQueue(), ctrlQ = K68.makeQueue();
+    const parser = K68.makeCmdParser(m => { log(`watch msg ${m.cat.toString(16)}/${m.key.toString(16).padStart(4, '0')}`); cmdQ.push(m); },
+      s => write(chars.cmdW, K68.ackFrame(s), true).catch(e => log('ack failed: ' + e.message)));
+    const onCmd = e => parser(new Uint8Array(e.target.value.buffer.slice(e.target.value.byteOffset, e.target.value.byteOffset + e.target.value.byteLength)));
+    const onCtrl = e => { const v = new Uint8Array(e.target.value.buffer.slice(e.target.value.byteOffset, e.target.value.byteOffset + e.target.value.byteLength)); if (v[1] !== 0x0a) log('ctrl ' + Array.from(v, x => x.toString(16).padStart(2, '0')).join('')); ctrlQ.push(v); };
+    try {
+      chars.cmdN.addEventListener('characteristicvaluechanged', onCmd);
+      chars.ctrl.addEventListener('characteristicvaluechanged', onCtrl);
+      await chars.cmdN.startNotifications(); await chars.ctrl.startNotifications();
+      setStatus($('sendstatus'), 'Talking to the watch…');
+      const chunk = +$('chunk').value;
+      await K68.upload({
+        writeCmd: b => write(chars.cmdW, b, true), writeCtrl: b => write(chars.ctrl, b, true), writeData: b => write(chars.data, b, false),
+        cmdEvents: cmdQ, ctrlEvents: ctrlQ, sleep: ms => new Promise(r => setTimeout(r, ms))
+      }, fileBytes, {
+        chunk, log, cancelled: () => cancel,
+        progress: (done, total, secs) => { $('prog').value = done / total; const rate = done / Math.max(secs, 0.1) / 1024; setStatus($('sendstatus'), `${(done / 1024).toFixed(0)} of ${(total / 1024).toFixed(0)} KB · ${rate.toFixed(1)} KB/s · ${Math.max(0, (total - done) / 1024 / Math.max(rate, 0.1)).toFixed(0)} s left`); }
+      });
+      $('prog').value = 1;
+      setStatus($('sendstatus'), 'Done. The watch accepted the face and is restarting to show it.', 'ok'); log('upload complete');
+    } catch (e) {
+      setStatus($('sendstatus'), e.message, 'bad'); log('stopped: ' + e.message);
+    } finally {
+      busy = false; refresh();
+      try { wakeLock && wakeLock.release(); } catch {}
+      try { chars && chars.cmdN.removeEventListener('characteristicvaluechanged', onCmd); chars && chars.ctrl.removeEventListener('characteristicvaluechanged', onCtrl); } catch {}
+    }
+  });
+})();
+</script>
+</body>
+</html>
