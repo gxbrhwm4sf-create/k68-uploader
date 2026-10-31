@@ -330,23 +330,46 @@ if (typeof module !== 'undefined') module.exports = K68;
 
   function refresh() { $('send').disabled = !(fileBytes && chars && !busy); $('cancel').disabled = !busy; }
 
+  const errText = e => {
+    if (e == null) return 'no error details (' + String(e) + ')';
+    if (typeof e === 'string') return e;
+    const parts = [e.name, e.message, e.code !== undefined ? 'code ' + e.code : ''].filter(Boolean);
+    if (parts.length) return parts.join(': ');
+    try { return JSON.stringify(e); } catch { return String(e); }
+  };
+  const hints = {
+    pick: 'No watch was chosen. If K68 was not in the list, iOS is hiding it because it is still connected through FitCloudPro. Force-quit FitCloudPro, turn Bluetooth off and on in Settings, then try again right away.',
+    gatt: 'The watch was found but would not connect. Keep it close and awake, then try again.',
+    svc: 'Connected, but the watch did not offer the face-upload service to this browser.'
+  };
   async function connect(all) {
+    let step = 'pick';
     try {
+      log('Bluetooth API: ' + (navigator.bluetooth ? 'present' : 'missing') + (navigator.userAgent ? ' · ' + navigator.userAgent : ''));
       const opts = { optionalServices: [K68.SVC_CMD, K68.SVC_DFU] };
       if (all) opts.acceptAllDevices = true; else opts.filters = [{ namePrefix: 'K68' }, { namePrefix: 'K6' }];
       setStatus($('connstatus'), 'Choose your watch in the list…');
+      log('step 1: opening device list (' + (all ? 'all devices' : 'names starting K6') + ')');
       device = await navigator.bluetooth.requestDevice(opts);
+      log('step 1 ok: picked "' + (device.name || '(no name)') + '" id ' + device.id);
       device.addEventListener('gattserverdisconnected', () => { log('watch disconnected'); chars = null; setStatus($('connstatus'), 'Disconnected.', busy ? 'bad' : ''); refresh(); });
-      setStatus($('connstatus'), 'Connecting to ' + (device.name || 'watch') + '…');
+      step = 'gatt'; setStatus($('connstatus'), 'Connecting to ' + (device.name || 'watch') + '…');
+      log('step 2: connecting');
       gatt = await device.gatt.connect();
-      const cmd = await gatt.getPrimaryService(K68.SVC_CMD), dfu = await gatt.getPrimaryService(K68.SVC_DFU);
+      log('step 2 ok: connected');
+      step = 'svc';
+      log('step 3: finding services');
+      const cmd = await gatt.getPrimaryService(K68.SVC_CMD); log('step 3a ok: command service');
+      const dfu = await gatt.getPrimaryService(K68.SVC_DFU); log('step 3b ok: face-upload service');
       chars = {
         cmdW: await cmd.getCharacteristic(K68.CH_CMD_W), cmdN: await cmd.getCharacteristic(K68.CH_CMD_N),
         data: await dfu.getCharacteristic(K68.CH_DATA), ctrl: await dfu.getCharacteristic(K68.CH_CTRL)
       };
-      setStatus($('connstatus'), 'Connected to ' + (device.name || 'watch') + '.', 'ok'); log('connected to ' + (device.name || '?'));
+      log('step 4 ok: all channels found · data write modes: ' + ['writeWithoutResponse', 'write'].filter(p => chars.data.properties && chars.data.properties[p]).join(', ') + ' · page support: ' + (chars.data.writeValueWithoutResponse ? 'no-reply write' : 'plain write only'));
+      setStatus($('connstatus'), 'Connected to ' + (device.name || 'watch') + '.', 'ok');
     } catch (e) {
-      setStatus($('connstatus'), 'Could not connect: ' + e.message, 'bad'); log('connect error: ' + e.message); chars = null;
+      const msg = errText(e);
+      setStatus($('connstatus'), hints[step] + ' (' + msg + ')', 'bad'); log('failed at ' + step + ': ' + msg); chars = null;
     }
     refresh();
   }
@@ -386,7 +409,7 @@ if (typeof module !== 'undefined') module.exports = K68;
       $('prog').value = 1;
       setStatus($('sendstatus'), 'Done. The watch accepted the face and is restarting to show it.', 'ok'); log('upload complete');
     } catch (e) {
-      setStatus($('sendstatus'), e.message, 'bad'); log('stopped: ' + e.message);
+      const m = e && e.message ? e.message : errText(e); setStatus($('sendstatus'), m, 'bad'); log('stopped: ' + m);
     } finally {
       busy = false; refresh();
       try { wakeLock && wakeLock.release(); } catch {}
