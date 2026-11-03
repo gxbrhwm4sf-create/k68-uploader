@@ -48,7 +48,7 @@ progress{width:100%;height:14px;accent-color:var(--accent)}
 <body>
 <main>
   <div>
-    <h1>K68 Face Uploader <small style="font-size:13px;font-weight:600;color:var(--muted)">v6</small></h1>
+    <h1>K68 Face Uploader <small style="font-size:13px;font-weight:600;color:var(--muted)">v7</small></h1>
     <p class="sub">Sends a watch-face file straight to your K68 over Bluetooth. Close FitCloudPro first (swipe it away).</p>
   </div>
 
@@ -91,10 +91,9 @@ progress{width:100%;height:14px;accent-color:var(--accent)}
     <div class="row">
       <label for="pace">Pause between packets</label>
       <select id="pace">
-        <option value="0">none (fastest)</option>
-        <option value="15" selected>15 ms (recommended)</option>
-        <option value="30">30 ms</option>
-        <option value="60">60 ms (slowest, most reliable)</option>
+        <option value="0" selected>auto (recommended)</option>
+        <option value="20">extra slow</option>
+        <option value="40">slowest</option>
       </select>
     </div>
     <div class="row">
@@ -178,7 +177,7 @@ const K68 = (() => {
   // io: { writeCmd(bytes), writeCtrl(bytes), writeData(bytes), cmdEvents, ctrlEvents (each {wait(pred,ms)}) , sleep(ms) }
   async function upload(io, file, opts) {
     const log = opts.log || (() => {}), progress = opts.progress || (() => {});
-    const chunk = opts.chunk || 160, pace = opts.pace || 0, cancelled = opts.cancelled || (() => false);
+    const chunk = opts.chunk || 160, pace = opts.pace || 0, drain = opts.drain == null ? 150 : opts.drain, cancelled = opts.cancelled || (() => false);
     const hex = b => Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
     let seq = 1;
     const check = () => { if (cancelled()) throw new Error('Cancelled before the watch installed anything.'); };
@@ -220,29 +219,39 @@ const K68 = (() => {
     if (r1[2] !== 0x01) throw new Error('Watch refused to start the transfer (status ' + r1[2] + ').');
     await io.writeCtrl(new Uint8Array([0x02, 0xa1, 0x27, 0, 0, 0, 0]));
     check();
-    // 4. Data in 2048-byte blocks, each followed by a check
-    let off = 0, retries = 0; const total = file.length; const t0 = Date.now();
+    // 4. Data in 2048-byte blocks, each followed by a check.
+    //    iOS sends write-without-response (data) and write-with-response (the 0x0a check) on
+    //    separate queues, so the check can overtake undrained data packets. We wait `drain` ms
+    //    after the last packet before the check, and escalate drain+pace when a block is refused.
+    let off = 0, retries = 0, curPace = pace, curDrain = drain, firstRejectLogged = false;
+    const total = file.length; const t0 = Date.now();
     while (off < total) {
       check();
       const block = file.subarray(off, Math.min(off + 2048, total));
+      const nPackets = Math.ceil(block.length / chunk);
       try {
         for (let i = 0; i < block.length; i += chunk) {
           await io.writeData(block.subarray(i, Math.min(i + chunk, block.length)));
-          if (pace) await io.sleep(pace);
+          if (curPace) await io.sleep(curPace);
         }
       } catch (e) {
-        throw new Error(`Sending data failed at ${off} bytes (${e.message}). Pick a smaller packet size and try again. Nothing was installed.`);
+        throw new Error(`Sending data failed at ${off} bytes (${e.message}). The packet size is too big for this phone's Bluetooth — pick a smaller one. Nothing was installed.`);
       }
+      if (curDrain) await io.sleep(curDrain);   // let the data queue drain before the barrier write
       const [h, l] = xorCheck(block);
       io.ctrlEvents.clear && io.ctrlEvents.clear(v => v[0] === 0x10 && v[1] === 0x0a);
       await io.writeCtrl(new Uint8Array([0x0a, block.length & 255, block.length >> 8, h, l]));
-      const r = await io.ctrlEvents.wait(v => v[0] === 0x10 && v[1] === 0x0a, 10000);
+      const r = await io.ctrlEvents.wait(v => v[0] === 0x10 && v[1] === 0x0a, 12000);
       const status = r[2], next = u32(r, 3);
       if (status === 1 && next === off + block.length) { off = next; retries = 0; }
       else {
-        retries++; log(`block at ${off} rejected (sent ${block.length} bytes in ${Math.ceil(block.length / chunk)} packets)`); log(`  detail (status ${status}, watch at ${next}), retry ${retries}`);
-        if (retries > 3) throw new Error('Watch kept rejecting data. Nothing was installed.');
-        if (next <= off + block.length && next >= Math.max(0, off - 2048)) off = next;
+        retries++;
+        const gotBytes = next - off;   // how many bytes of this block the watch actually accepted
+        if (!firstRejectLogged) { log(`block at ${off}: watch took ${gotBytes < 0 ? 0 : gotBytes} of ${block.length} bytes (status ${status}) — ${gotBytes > 0 && gotBytes < block.length ? 'packets are being lost in transit' : 'whole block refused'}`); firstRejectLogged = true; }
+        log(`retry ${retries} at ${off}: slowing down (pace ${curPace}→${Math.min(curPace + 20, 120)}ms, drain ${curDrain}→${Math.min(curDrain * 2, 1000)}ms)`);
+        if (retries > 5) throw new Error(`The watch kept refusing data even at the slowest speed (it accepted ${Math.max(0, next) } of ${total} bytes). This phone's Bluetooth app can't push data fast enough reliably. Nothing was installed; a native iPhone app is the reliable route. See notes below.`);
+        curPace = Math.min(curPace + 20, 120); curDrain = Math.min(curDrain * 2, 1000);
+        if (next > off && next < off + block.length) off = next;   // resume from where the watch got to, if it reported partial progress
       }
       const secs = (Date.now() - t0) / 1000;
       progress(off, total, secs);
@@ -372,7 +381,7 @@ if (typeof module !== 'undefined') module.exports = K68;
   async function connect(all) {
     let step = 'pick';
     try {
-      log('page v6 · packets ' + $('chunk').value + ' B, pause ' + $('pace').value + ' ms · Bluetooth API: ' + (navigator.bluetooth ? 'present' : 'missing') + (navigator.userAgent ? ' · ' + navigator.userAgent : ''));
+      log('page v7 · packets ' + $('chunk').value + ' B, pause ' + $('pace').value + ' ms · Bluetooth API: ' + (navigator.bluetooth ? 'present' : 'missing') + (navigator.userAgent ? ' · ' + navigator.userAgent : ''));
       const opts = { optionalServices: [K68.SVC_CMD, K68.SVC_DFU] };
       if (all) opts.acceptAllDevices = true; else opts.filters = [{ namePrefix: 'K68' }, { namePrefix: 'K6' }];
       setStatus($('connstatus'), 'Choose your watch in the list…');
@@ -430,7 +439,7 @@ if (typeof module !== 'undefined') module.exports = K68;
         writeCmd: b => write(chars.cmdW, b, true), writeCtrl: b => write(chars.ctrl, b, true), writeData: b => write(chars.data, b, false),
         cmdEvents: cmdQ, ctrlEvents: ctrlQ, sleep: ms => new Promise(r => setTimeout(r, ms))
       }, fileBytes, {
-        chunk, log, cancelled: () => cancel, appId: $('appid').value.trim(), pace: +$('pace').value,
+        chunk, log, cancelled: () => cancel, appId: $('appid').value.trim(), pace: +$('pace').value, drain: 150,
         progress: (done, total, secs) => { $('prog').value = done / total; const rate = done / Math.max(secs, 0.1) / 1024; setStatus($('sendstatus'), `${(done / 1024).toFixed(0)} of ${(total / 1024).toFixed(0)} KB · ${rate.toFixed(1)} KB/s · ${Math.max(0, (total - done) / 1024 / Math.max(rate, 0.1)).toFixed(0)} s left`); }
       });
       $('prog').value = 1;
