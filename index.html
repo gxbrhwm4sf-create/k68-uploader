@@ -48,7 +48,7 @@ progress{width:100%;height:14px;accent-color:var(--accent)}
 <body>
 <main>
   <div>
-    <h1>K68 Face Uploader <small style="font-size:13px;font-weight:600;color:var(--muted)">v7</small></h1>
+    <h1>K68 Face Uploader <small style="font-size:13px;font-weight:600;color:var(--muted)">v8</small></h1>
     <p class="sub">Sends a watch-face file straight to your K68 over Bluetooth. Close FitCloudPro first (swipe it away).</p>
   </div>
 
@@ -80,18 +80,26 @@ progress{width:100%;height:14px;accent-color:var(--accent)}
   <section aria-labelledby="s3">
     <h2 id="s3">3 · Send</h2>
     <div class="row">
+      <label for="dmode">Data mode</label>
+      <select id="dmode">
+        <option value="rel" selected>Reliable / acknowledged (try first)</option>
+        <option value="nr">No-reply (like the app)</option>
+      </select>
+    </div>
+    <div class="row">
       <label for="chunk">Packet size</label>
       <select id="chunk">
         <option value="160" selected>160 bytes (recommended)</option>
-        <option value="240">240 bytes (same as the app)</option>
         <option value="128">128 bytes</option>
-        <option value="64">64 bytes (slowest)</option>
+        <option value="64">64 bytes</option>
+        <option value="20">20 bytes (slowest, safest)</option>
+        <option value="240">240 bytes (only if MTU allows)</option>
       </select>
     </div>
     <div class="row">
       <label for="pace">Pause between packets</label>
       <select id="pace">
-        <option value="0" selected>auto (recommended)</option>
+        <option value="0" selected>auto</option>
         <option value="20">extra slow</option>
         <option value="40">slowest</option>
       </select>
@@ -381,7 +389,7 @@ if (typeof module !== 'undefined') module.exports = K68;
   async function connect(all) {
     let step = 'pick';
     try {
-      log('page v7 · packets ' + $('chunk').value + ' B, pause ' + $('pace').value + ' ms · Bluetooth API: ' + (navigator.bluetooth ? 'present' : 'missing') + (navigator.userAgent ? ' · ' + navigator.userAgent : ''));
+      log('page v8 · packets ' + $('chunk').value + ' B, pause ' + $('pace').value + ' ms · Bluetooth API: ' + (navigator.bluetooth ? 'present' : 'missing') + (navigator.userAgent ? ' · ' + navigator.userAgent : ''));
       const opts = { optionalServices: [K68.SVC_CMD, K68.SVC_DFU] };
       if (all) opts.acceptAllDevices = true; else opts.filters = [{ namePrefix: 'K68' }, { namePrefix: 'K6' }];
       setStatus($('connstatus'), 'Choose your watch in the list…');
@@ -401,7 +409,7 @@ if (typeof module !== 'undefined') module.exports = K68;
         cmdW: await cmd.getCharacteristic(K68.CH_CMD_W), cmdN: await cmd.getCharacteristic(K68.CH_CMD_N),
         data: await dfu.getCharacteristic(K68.CH_DATA), ctrl: await dfu.getCharacteristic(K68.CH_CTRL)
       };
-      log('step 4 ok: all channels found · data write modes: ' + ['writeWithoutResponse', 'write'].filter(p => chars.data.properties && chars.data.properties[p]).join(', ') + ' · page support: ' + (chars.data.writeValueWithoutResponse ? 'no-reply write' : 'plain write only'));
+      log('step 4 ok: all channels found · data write modes: ' + ['writeWithoutResponse', 'write'].filter(p => chars.data.properties && chars.data.properties[p]).join(', ') + ' · data char can: ' + [chars.data.writeValueWithResponse ? 'acknowledged' : null, chars.data.writeValueWithoutResponse ? 'no-reply' : null].filter(Boolean).join(' + '));
       setStatus($('connstatus'), 'Connected to ' + (device.name || 'watch') + '.', 'ok');
     } catch (e) {
       const msg = errText(e);
@@ -435,11 +443,26 @@ if (typeof module !== 'undefined') module.exports = K68;
       await chars.cmdN.startNotifications(); await chars.ctrl.startNotifications();
       setStatus($('sendstatus'), 'Talking to the watch…');
       const chunk = +$('chunk').value;
+      const reliable = $('dmode').value === 'rel';
+      let dataModeProven = false;
+      const writeData = async b => {
+        if (reliable) {
+          if (!chars.data.writeValueWithResponse) throw new Error('This browser cannot do acknowledged writes. Switch Data mode to "No-reply".');
+          try { await chars.data.writeValueWithResponse(b); dataModeProven = true; }
+          catch (e) {
+            if (!dataModeProven) throw new Error('The watch refused acknowledged writes on the data channel (' + errText(e) + '). It only accepts no-reply writes — which this phone app cannot deliver reliably. A native iPhone app is the route. See notes.');
+            throw e;
+          }
+        } else {
+          await write(chars.data, b, false);
+        }
+      };
+      log('data mode: ' + (reliable ? 'reliable/acknowledged' : 'no-reply') + ', packets ' + chunk + ' B');
       await K68.upload({
-        writeCmd: b => write(chars.cmdW, b, true), writeCtrl: b => write(chars.ctrl, b, true), writeData: b => write(chars.data, b, false),
+        writeCmd: b => write(chars.cmdW, b, true), writeCtrl: b => write(chars.ctrl, b, true), writeData,
         cmdEvents: cmdQ, ctrlEvents: ctrlQ, sleep: ms => new Promise(r => setTimeout(r, ms))
       }, fileBytes, {
-        chunk, log, cancelled: () => cancel, appId: $('appid').value.trim(), pace: +$('pace').value, drain: 150,
+        chunk, log, cancelled: () => cancel, appId: $('appid').value.trim(), pace: +$('pace').value, drain: reliable ? 0 : 150,
         progress: (done, total, secs) => { $('prog').value = done / total; const rate = done / Math.max(secs, 0.1) / 1024; setStatus($('sendstatus'), `${(done / 1024).toFixed(0)} of ${(total / 1024).toFixed(0)} KB · ${rate.toFixed(1)} KB/s · ${Math.max(0, (total - done) / 1024 / Math.max(rate, 0.1)).toFixed(0)} s left`); }
       });
       $('prog').value = 1;
