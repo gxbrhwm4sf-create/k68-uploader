@@ -48,7 +48,7 @@ progress{width:100%;height:14px;accent-color:var(--accent)}
 <body>
 <main>
   <div>
-    <h1>K68 Face Uploader <small style="font-size:13px;font-weight:600;color:var(--muted)">v3</small></h1>
+    <h1>K68 Face Uploader <small style="font-size:13px;font-weight:600;color:var(--muted)">v4</small></h1>
     <p class="sub">Sends a watch-face file straight to your K68 over Bluetooth. Close FitCloudPro first (swipe it away).</p>
   </div>
 
@@ -86,6 +86,10 @@ progress{width:100%;height:14px;accent-color:var(--accent)}
         <option value="240">240 bytes (faster, same as the app)</option>
         <option value="100">100 bytes (if 180 fails)</option>
       </select>
+    </div>
+    <div class="row">
+      <label for="appid">App ID (optional)</label>
+      <input id="appid" inputmode="numeric" autocomplete="off" placeholder="leave empty if unknown" style="flex:1 1 180px;font:inherit;padding:8px;border-radius:8px;border:1px solid var(--line);background:var(--panel);color:var(--ink);min-width:0">
     </div>
     <div class="row">
       <button id="send" class="primary" disabled>Send face</button>
@@ -169,8 +173,17 @@ const K68 = (() => {
     let seq = 1;
     const check = () => { if (cancelled()) throw new Error('Cancelled before the watch installed anything.'); };
 
-    // 1. No app-ID check: the watch only accepts its owner's FitCloudPro account ID, which we don't have.
-    //    (Never send the first-time setup bind 03/0011: it would re-assign the watch to another ID.)
+    // 1. Optional app-ID check (03/0013, the reconnect form). Only with the owner's FitCloudPro ID.
+    //    Never send the first-time setup bind 03/0011: it would re-assign the watch to another ID.
+    if (opts.appId) {
+      const id = new Uint8Array(32); const a = String(opts.appId).trim().slice(0, 32);
+      for (let i = 0; i < a.length; i++) id[i] = a.charCodeAt(i) & 0x7f;
+      await io.writeCmd(frame(3, 0x0013, id, seq++));
+      const bind = await io.cmdEvents.wait(m => m.cat === 3 && m.key === 0x0014, 6000);
+      log('app ID check reply ' + hex(bind.value));
+      if (bind.value[0] !== 0) throw new Error('The watch did not accept that app ID (reply ' + hex(bind.value) + '). Nothing was sent.');
+      check();
+    }
     // 2. Prepare for face transfer. If the watch declines (it may require the app ID), go on to the
     //    Realtek handshake anyway: nothing is installed unless the watch validates the complete file.
     await io.writeCmd(frame(1, 0x0001, new Uint8Array(0), seq++));
@@ -304,6 +317,8 @@ if (typeof module !== 'undefined') module.exports = K68;
 
   let fileBytes = null, device = null, gatt = null, chars = null, busy = false, cancel = false, wakeLock = null;
 
+  try { const v = localStorage.getItem('k68appid'); if (v) $('appid').value = v; } catch {}
+  $('appid').addEventListener('change', () => { try { localStorage.setItem('k68appid', $('appid').value.trim()); } catch {} });
   if (!navigator.bluetooth) {
     setStatus($('connstatus'), 'This browser has no Bluetooth access. On iPhone, open this page in the Bluefy app.', 'bad');
     $('connect').disabled = $('connectAny').disabled = true;
@@ -344,7 +359,7 @@ if (typeof module !== 'undefined') module.exports = K68;
   async function connect(all) {
     let step = 'pick';
     try {
-      log('page v3 · Bluetooth API: ' + (navigator.bluetooth ? 'present' : 'missing') + (navigator.userAgent ? ' · ' + navigator.userAgent : ''));
+      log('page v4 · Bluetooth API: ' + (navigator.bluetooth ? 'present' : 'missing') + (navigator.userAgent ? ' · ' + navigator.userAgent : ''));
       const opts = { optionalServices: [K68.SVC_CMD, K68.SVC_DFU] };
       if (all) opts.acceptAllDevices = true; else opts.filters = [{ namePrefix: 'K68' }, { namePrefix: 'K6' }];
       setStatus($('connstatus'), 'Choose your watch in the list…');
@@ -402,7 +417,7 @@ if (typeof module !== 'undefined') module.exports = K68;
         writeCmd: b => write(chars.cmdW, b, true), writeCtrl: b => write(chars.ctrl, b, true), writeData: b => write(chars.data, b, false),
         cmdEvents: cmdQ, ctrlEvents: ctrlQ, sleep: ms => new Promise(r => setTimeout(r, ms))
       }, fileBytes, {
-        chunk, log, cancelled: () => cancel,
+        chunk, log, cancelled: () => cancel, appId: $('appid').value.trim(),
         progress: (done, total, secs) => { $('prog').value = done / total; const rate = done / Math.max(secs, 0.1) / 1024; setStatus($('sendstatus'), `${(done / 1024).toFixed(0)} of ${(total / 1024).toFixed(0)} KB · ${rate.toFixed(1)} KB/s · ${Math.max(0, (total - done) / 1024 / Math.max(rate, 0.1)).toFixed(0)} s left`); }
       });
       $('prog').value = 1;
