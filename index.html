@@ -48,7 +48,7 @@ progress{width:100%;height:14px;accent-color:var(--accent)}
 <body>
 <main>
   <div>
-    <h1>K68 Face Uploader</h1>
+    <h1>K68 Face Uploader <small style="font-size:13px;font-weight:600;color:var(--muted)">v3</small></h1>
     <p class="sub">Sends a watch-face file straight to your K68 over Bluetooth. Close FitCloudPro first (swipe it away).</p>
   </div>
 
@@ -169,22 +169,21 @@ const K68 = (() => {
     let seq = 1;
     const check = () => { if (cancelled()) throw new Error('Cancelled before the watch installed anything.'); };
 
-    // 1. Bind (same as the app does on every connect)
-    const id = new Uint8Array(32); for (let i = 0; i < BIND_ID.length; i++) id[i] = BIND_ID.charCodeAt(i);
-    await io.writeCmd(frame(3, 0x0013, id, seq++));
-    const bind = await io.cmdEvents.wait(m => m.cat === 3 && m.key === 0x0014, 6000);
-    log('bind reply ' + hex(bind.value));
-    if (bind.value[0] !== 0) throw new Error('Watch refused the connection (bind reply ' + hex(bind.value) + ').');
-    check();
-    // 2. Prepare for face transfer
+    // 1. No app-ID check: the watch only accepts its owner's FitCloudPro account ID, which we don't have.
+    //    (Never send the first-time setup bind 03/0011: it would re-assign the watch to another ID.)
+    // 2. Prepare for face transfer. If the watch declines (it may require the app ID), go on to the
+    //    Realtek handshake anyway: nothing is installed unless the watch validates the complete file.
     await io.writeCmd(frame(1, 0x0001, new Uint8Array(0), seq++));
-    const prep = await io.cmdEvents.wait(m => m.cat === 1 && m.key === 0x0002, 6000);
-    log('prepare reply ' + hex(prep.value));
-    if (prep.value.some(x => x !== 0)) throw new Error('Watch is not ready for a face transfer (reply ' + hex(prep.value) + ').');
+    try {
+      const prep = await io.cmdEvents.wait(m => m.cat === 1 && m.key === 0x0002, 6000);
+      log('prepare reply ' + hex(prep.value) + (prep.value.some(x => x !== 0) ? ' (declined, trying the transfer channel directly)' : ''));
+    } catch (e) { log('no prepare reply, trying the transfer channel directly'); }
     check();
     // 3. Transfer handshake
     await io.writeCtrl(new Uint8Array([0x09]));
-    const r9 = await io.ctrlEvents.wait(v => v[0] === 0x10 && v[1] === 0x09, 6000);
+    let r9;
+    try { r9 = await io.ctrlEvents.wait(v => v[0] === 0x10 && v[1] === 0x09, 6000); }
+    catch (e) { throw new Error('The watch did not open its transfer channel. It likely needs the FitCloudPro account ID first. Nothing was installed.'); }
     log('buffer check reply ' + hex(r9));
     await io.writeCtrl(new Uint8Array([0x06, 0xa1, 0x27]));
     const r6 = await io.ctrlEvents.wait(v => v[0] === 0x10 && v[1] === 0x06, 6000);
@@ -345,7 +344,7 @@ if (typeof module !== 'undefined') module.exports = K68;
   async function connect(all) {
     let step = 'pick';
     try {
-      log('Bluetooth API: ' + (navigator.bluetooth ? 'present' : 'missing') + (navigator.userAgent ? ' · ' + navigator.userAgent : ''));
+      log('page v3 · Bluetooth API: ' + (navigator.bluetooth ? 'present' : 'missing') + (navigator.userAgent ? ' · ' + navigator.userAgent : ''));
       const opts = { optionalServices: [K68.SVC_CMD, K68.SVC_DFU] };
       if (all) opts.acceptAllDevices = true; else opts.filters = [{ namePrefix: 'K68' }, { namePrefix: 'K6' }];
       setStatus($('connstatus'), 'Choose your watch in the list…');
